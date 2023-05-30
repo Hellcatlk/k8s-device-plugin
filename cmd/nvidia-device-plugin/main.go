@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,10 @@ import (
 
 	"k8s.io/klog/v2"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
+)
+
+const (
+	nvidiaProcDriverGPUsPath = "/proc/driver/nvidia/gpus"
 )
 
 func main() {
@@ -158,6 +163,12 @@ func start(c *cli.Context, flags []cli.Flag) error {
 	}
 	defer watcher.Close()
 
+	// Watch pci device change
+	err = watcher.Add(nvidiaProcDriverGPUsPath)
+	if err != nil {
+		return fmt.Errorf("fswatcher %s failed: %v", nvidiaProcDriverGPUsPath, err)
+	}
+
 	klog.Info("Starting OS watcher.")
 	sigs := newOSWatcher(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
@@ -200,6 +211,11 @@ restart:
 		case event := <-watcher.Events:
 			if event.Name == pluginapi.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
 				klog.Infof("inotify: %s created, restarting.", pluginapi.KubeletSocket)
+				goto restart
+			}
+
+			if strings.Contains(event.Name, nvidiaProcDriverGPUsPath) && (event.Op == fsnotify.Create || event.Op == fsnotify.Remove) {
+				klog.Errorf("inotify: pci device %v %s, restarting.", event.Name, event.Op)
 				goto restart
 			}
 
